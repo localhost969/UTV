@@ -87,7 +87,7 @@ public final class Main extends Activity {
     private Uri uri;
     private String name, src = "";   // src: content with '\n' line endings, used when not editing
     private int enc, bytes;          // 0 utf8, 1 utf8+bom, 2 utf16le, 3 utf16be, 4 windows-1252, 5 iso-8859-1
-    private boolean crlf;
+    private int eol;                 // dominant line ending: 0 LF, 1 CRLF, 2 CR
     private Runnable afterSaveAs;
 
     // edit-mode search state
@@ -814,7 +814,8 @@ public final class Main extends Activity {
     private byte[] encode(String s) { return encode(s, effectiveEnc(s)); }
 
     private byte[] encode(String s, int e) {
-        if (crlf) s = s.replace("\n", "\r\n");
+        if (eol == 1) s = s.replace("\n", "\r\n");
+        else if (eol == 2) s = s.replace('\n', '\r');
         byte[] body = s.getBytes(charset(e));
         byte[] bom = e == 1 ? new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}
                 : e == 2 ? new byte[]{(byte) 0xFF, (byte) 0xFE} : e == 3 ? new byte[]{(byte) 0xFE, (byte) 0xFF} : new byte[0];
@@ -974,7 +975,7 @@ public final class Main extends Activity {
                     byte[] d = t.toString().getBytes(StandardCharsets.UTF_8);
                     int[] info = new int[2];
                     String s = decode(d, info);
-                    enc = 0; crlf = info[1] != 0; uri = null;
+                    enc = 0; eol = info[1]; uri = null;
                     show("untitled.txt", s, Text.of(s), d.length);
                     return;
                 }
@@ -1030,7 +1031,7 @@ public final class Main extends Activity {
                 }
                 uri = u;
                 enc = info[0];
-                crlf = info[1] != 0;
+                eol = info[1];
                 show(fn, fs, ft, size);
             });
         }).start();
@@ -1050,7 +1051,7 @@ public final class Main extends Activity {
         if (name == null) return;
         String e = enc == 2 ? "UTF-16LE" : enc == 3 ? "UTF-16BE" : enc == 4 ? "Windows-1252" : enc == 5 ? "ISO-8859-1" : "UTF-8";
         String m = editing ? "EDIT MODE" : String.format(Locale.US, "READ ONLY · %,d lines · %s", doc.lineCount(), human(bytes));
-        meta.setText(m + " · " + e + (crlf ? " · CRLF" : "") + (dirty ? " · Modified" : ""));
+        meta.setText(m + " · " + e + (eol == 1 ? " · CRLF" : eol == 2 ? " · CR" : "") + (dirty ? " · Modified" : ""));
     }
 
     private static String human(long b) {
@@ -1069,7 +1070,7 @@ public final class Main extends Activity {
         return s != null ? s : u.toString();
     }
 
-    /** Decodes bytes; info[0] = encoding, info[1] = 1 if CRLF. Returns text with '\n' line endings.
+    /** Decodes bytes; info[0] = encoding, info[1] = dominant line ending (0 LF, 1 CRLF, 2 CR). Returns text with '\n' line endings.
      *  Bytes that aren't valid UTF-8 are read as a legacy 8-bit encoding so saving writes the same bytes back. */
     static String decode(byte[] b, int[] info) {
         int n = b.length;
@@ -1088,9 +1089,14 @@ public final class Main extends Activity {
                 if (!java.util.Arrays.equals(s.getBytes(w), b)) { s = new String(b, StandardCharsets.ISO_8859_1); info[0] = 5; }
             }
         }
-        int cr = s.indexOf('\r');
-        if (cr < 0) return s;
-        info[1] = cr + 1 < s.length() && s.charAt(cr + 1) == '\n' ? 1 : 0;
+        if (s.indexOf('\r') < 0) return s;
+        int crlf = 0, cr = 0, lf = 0;
+        for (int i = 0, len = s.length(); i < len; i++) {
+            char ch = s.charAt(i);
+            if (ch == '\r') { if (i + 1 < len && s.charAt(i + 1) == '\n') { crlf++; i++; } else cr++; }
+            else if (ch == '\n') lf++;
+        }
+        info[1] = crlf > lf && crlf >= cr ? 1 : cr > lf && cr > crlf ? 2 : 0;
         return s.replace("\r\n", "\n").replace('\r', '\n');
     }
 
